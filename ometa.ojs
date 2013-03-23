@@ -1,0 +1,465 @@
+// load("lib.js")
+// load("ometa-base.js")
+// load("parser.js")
+
+//
+//-- bs-js-compiler.txt
+//
+ometa BSJSParser <: Parser {
+  fromTo :x :y = seq(x) (~seq(y) char)* seq(y), 
+  space        = ^space | fromTo('//', '\n') | fromTo('/*', '*/'),
+  nameFirst    = letter | '$' | '_',
+  nameRest     = nameFirst | digit,
+  iName        = firstAndRest(#nameFirst, #nameRest):r                               -> r.join(''),
+  isKeyword :x = ?BSJSParser._isKeyword(x),
+  name         = iName:n ~isKeyword(n)                                               -> [#name, n=='self' ? '$elf' : n],
+  keyword      = iName:k isKeyword(k)                                                -> [k, k],
+  hexDigit     = char:x {this.hexDigits.indexOf(x.toLowerCase())}:v ?(v >= 0)        -> v,
+  hexLit       = hexLit:n hexDigit:d                                                 -> (n * 16 + d)
+               | hexDigit,
+  number       = ``0x'' hexLit:n                                                     -> [#number, n]
+               | digit+:ws ('.' digit+ | empty -> []):fs                             -> [#number, parseFloat(ws.join('') + '.' +
+                                                                                                             fs.join(''))],
+  escapeChar   = '\\' char:c                                                         -> unescape('\\' + c),
+  str          = seq('"""')  (escapeChar | ~seq('"""') char)*:cs seq('"""')          -> [#string, cs.join('')]
+               | '\'' (escapeChar | ~'\'' char)*:cs '\''                             -> [#string, cs.join('')]
+               | '"'  (escapeChar | ~'"'  char)*:cs '"'                              -> [#string, cs.join('')]
+               | ('#' | '`') iName:n                                                 -> [#string, n],
+  special      = ( '('   | ')'    | '{'    | '}'     | '['    | ']'     | ','    
+                 | ';'   | '?'    | ':'    | ``!=='' | ``!='' | ``==='' | ``==''
+                 | ``='' | ``>='' | '>'    | ``<=''  | '<'    | ``++''  | ``+=''
+                 | '+'   | ``--'' | ``-='' | '-'     | ``*='' | '*'     | ``/=''
+                 | '/'   | ``%='' | '%'    | ``&&='' | ``&&'' | ``||='' | ``||''
+                 | '.'   | '!'                                                   ):s -> [s, s],
+  tok          = spaces (name | keyword | number | str | special),
+  toks         = token*:ts spaces end                                                -> ts,
+  token :tt    = tok:t ?(t[0] == tt)                                                 -> t[1],
+  spacesNoNl   = (~'\n' space)*,
+
+  expr         = orExpr:e ( "?"   expr:t   ":" expr:f                                -> [#condExpr, e, t, f]
+                          | "="   expr:rhs                                           -> [#set,  e, rhs]
+                          | "+="  expr:rhs                                           -> [#mset, e, "+",  rhs]
+                          | "-="  expr:rhs                                           -> [#mset, e, "-",  rhs]
+                          | "*="  expr:rhs                                           -> [#mset, e, "*",  rhs]
+                          | "/="  expr:rhs                                           -> [#mset, e, "/",  rhs]
+                          | "%="  expr:rhs                                           -> [#mset, e, "%",  rhs]
+                          | "&&=" expr:rhs                                           -> [#mset, e, "&&", rhs]
+                          | "||=" expr:rhs                                           -> [#mset, e, "||", rhs]
+                          | empty                                                    -> e
+                          ),
+  orExpr       = orExpr:x "||" andExpr:y                                             -> [#binop, "||", x, y]
+               | andExpr,
+  andExpr      = andExpr:x "&&" eqExpr:y                                             -> [#binop, "&&", x, y]
+               | eqExpr,
+  eqExpr       = eqExpr:x ( "=="  relExpr:y                                          -> [#binop, "==",  x, y]
+                          | "!="  relExpr:y                                          -> [#binop, "!=",  x, y]
+                          | "===" relExpr:y                                          -> [#binop, "===", x, y]
+                          | "!==" relExpr:y                                          -> [#binop, "!==", x, y]
+                          )
+               | relExpr,
+  relExpr      = relExpr:x ( ">"          addExpr:y                                  -> [#binop, ">",          x, y]
+                           | ">="         addExpr:y                                  -> [#binop, ">=",         x, y]
+                           | "<"          addExpr:y                                  -> [#binop, "<",          x, y]
+                           | "<="         addExpr:y                                  -> [#binop, "<=",         x, y]
+                           | "instanceof" addExpr:y                                  -> [#binop, "instanceof", x, y]
+                           )
+               | addExpr,
+  addExpr      = addExpr:x "+" mulExpr:y                                             -> [#binop, "+",          x, y]
+               | addExpr:x "-" mulExpr:y                                             -> [#binop, "-",          x, y]
+               | mulExpr,
+  mulExpr      = mulExpr:x "*" unary:y                                               -> [#binop, "*",          x, y]
+               | mulExpr:x "/" unary:y                                               -> [#binop, "/",          x, y]
+               | mulExpr:x "%" unary:y                                               -> [#binop, "%",          x, y]
+               | unary,
+  unary        = "-"      postfix:p                                                  -> [#unop,  "-",        p]
+               | "+"      postfix:p                                                  -> [#unop,  "+",        p]
+               | "++"     postfix:p                                                  -> [#preop, "++",       p]
+               | "--"     postfix:p                                                  -> [#preop, "--",       p]
+               | "!"      unary:p                                                    -> [#unop,  "!",        p]
+               | "void"   unary:p                                                    -> [#unop,  "void",     p]
+               | "delete" unary:p                                                    -> [#unop,  "delete",   p]
+               | "typeof" unary:p                                                    -> [#unop,  "typeof",   p]
+               | postfix,
+  postfix      = primExpr:p ( spacesNoNl "++"                                        -> [#postop, "++", p]
+                            | spacesNoNl "--"                                        -> [#postop, "--", p]
+                            | empty                                                  -> p
+                            ),
+  primExpr     = primExpr:p ( "[" expr:i "]"                                         -> [#getp, i, p]
+                            | "." "name":m "(" listOf(#expr, ','):as ")"             -> [#send, m, p].concat(as)
+                            | "." "name":f                                           -> [#getp, [#string, f], p]
+                            | "(" listOf(#expr, ','):as ")"                          -> [#call, p].concat(as)
+                            )
+               | primExprHd,
+  primExprHd   = "(" expr:e ")"                                                      -> e
+               | "this"                                                              -> [#this]
+               | "name":n                                                            -> [#get, n]
+               | "number":n                                                          -> [#number, n]
+               | "string":s                                                          -> [#string, s]
+               | "function" funcRest
+               | "new" "name":n "(" listOf(#expr, ','):as ")"                        -> [#new, n].concat(as)
+               | "[" listOf(#expr, ','):es "]"                                       -> [#arr].concat(es)
+               | json,
+  json         = "{" listOf(#jsonBinding, ','):bs "}"                                -> [#json].concat(bs),
+  jsonBinding  = jsonPropName:n ":" expr:v                                           -> [#binding, n, v],
+  jsonPropName = "name" | "number" | "string",
+  formal       = spaces "name",
+  funcRest     = "(" listOf(#formal, ','):fs ")" "{" srcElems:body "}"               -> [#func, fs, body],
+  sc           = spacesNoNl ('\n' | &'}' | end)
+               | ";",
+  binding      = "name":n ( "=" expr
+                          | empty -> [#get, 'undefined'] ):v                         -> [#var, n, v],
+  block        = "{" srcElems:ss "}"                                                 -> ss,
+  stmt         = block
+               | "var" listOf(#binding, ','):bs sc                                   -> [#begin].concat(bs)
+               | "if" "(" expr:c ")" stmt:t ( "else" stmt
+                                            | empty -> [#get, 'undefined'] ):f       -> [#if, c, t, f]
+               | "while" "(" expr:c ")" stmt:s                                       -> [#while,   c, s]
+               | "do" stmt:s "while" "(" expr:c ")" sc                               -> [#doWhile, s, c]
+               | "for" "(" ( "var" binding
+                           | expr
+                           | empty -> [#get, 'undefined'] ):i
+                       ";" ( expr
+                           | empty -> [#get, 'true']      ):c
+                       ";" ( expr
+                           | empty -> [#get, 'undefined'] ):u
+                       ")" stmt:s                                                    -> [#for, i, c, u, s]
+               | "for" "(" ( "var" "name":n -> [#var, n, [#get, 'undefined']]
+                           | expr                                             ):v
+                      "in" expr:e
+                       ")" stmt:s                                                    -> [#forIn, v, e, s]
+               | "switch" "(" expr:e ")" "{"
+                   ( "case" expr:c ":" srcElems:cs -> [#case, c, cs]
+                   | "default"     ":" srcElems:cs -> [#default, cs] )*:cs
+                 "}"                                                                 -> [#switch, e].concat(cs)
+               | "break" sc                                                          -> [#break]
+               | "continue" sc                                                       -> [#continue]
+               | "throw" spacesNoNl expr:e sc                                        -> [#throw, e]
+               | "try" block:t "catch" "(" "name":e ")" block:c
+                             ( "finally" block
+                             | empty -> [#get, 'undefined'] ):f                      -> [#try, t, e, c, f]
+               | "return" ( expr
+                          | empty -> [#get, 'undefined'] ):e sc                      -> [#return, e]
+               | "with" "(" expr:x ")" stmt:s                                        -> [#with, x, s]
+               | expr:e sc                                                           -> e
+               | ";"                                                                 -> [#get, "undefined"],
+  srcElem      = "function" "name":n funcRest:f                                      -> [#var, n, f]
+               | stmt,
+  srcElems     = srcElem*:ss                                                         -> [#begin].concat(ss),
+
+  topLevel     = srcElems:r spaces end                                               -> r
+}
+
+BSJSParser.hexDigits = "0123456789abcdef"
+
+BSJSParser.keywords  = { }
+
+keywords = ["break", "case", "catch", "continue", "default", "delete", "do", "else", "finally", "for", "function", "if", "in",
+            "instanceof", "new", "return", "switch", "this", "throw", "try", "typeof", "var", "void", "while", "with", "ometa"]
+
+for (var idx = 0; idx < keywords.length; idx++)
+  BSJSParser.keywords[keywords[idx]] = true
+
+BSJSParser._isKeyword = function(k) { return this.keywords.hasOwnProperty(k) }
+
+
+ometa BSSemActionParser <: BSJSParser {
+  curlySemAction = "{" expr:r sc "}" spaces                                  -> r
+                 | "{" (srcElem:s &srcElem -> s)*:ss
+                       ( expr:r sc -> [#return, r] | srcElem):s {ss.push(s)}
+                   "}" spaces                                                -> [#send, #call,
+                                                                                        [#func, [], [#begin].concat(ss)],
+                                                                                        [#this]],
+  semAction      = curlySemAction
+                 | primExpr:r spaces                                         -> r
+}
+
+ometa BSJSTranslator {
+  trans      = [:t apply(t):ans]     -> ans,
+  curlyTrans = [#begin curlyTrans:r] -> r
+             | [#begin trans*:rs]    -> ('{' + rs.join(';') + '}')
+             | trans:r               -> ('{' + r + '}'),
+
+  this                                                  -> 'this',
+  break                                                 -> 'break',
+  continue                                              -> 'continue',
+  number   :n                                           -> ('(' + n + ')'),
+  string   :s                                           -> s.toProgramString(),
+  arr      trans*:xs                                    -> ('[' + xs.join(',') + ']'),
+  unop     :op trans:x                                  -> ('(' + op + ' ' + x + ')'),
+  getp     trans:fd trans:x                             -> (x + '[' + fd + ']'),
+  get      :x                                           -> x,
+  set      trans:lhs trans:rhs                          -> ('(' + lhs + '=' + rhs + ')'),
+  mset     trans:lhs :op trans:rhs                      -> ('(' + lhs + op + '=' + rhs + ')'),
+  binop    :op trans:x trans:y                          -> ('(' + x + ' ' + op + ' ' + y + ')'),
+  preop    :op trans:x                                  -> (op + x),
+  postop   :op trans:x                                  -> (x + op),
+  return   trans:x                                      -> ('return ' + x),
+  with     trans:x curlyTrans:s                         -> ('with(' + x + ')' + s),
+  if       trans:cond curlyTrans:t curlyTrans:e         -> ('if(' + cond + ')' + t + 'else' + e),
+  condExpr trans:cond trans:t trans:e                   -> ('(' + cond + '?' + t + ':' + e + ')'),
+  while    trans:cond curlyTrans:body                   -> ('while(' + cond + ')' + body),
+  doWhile  curlyTrans:body trans:cond                   -> ('do' + body + 'while(' + cond + ')'),
+  for      trans:init trans:cond trans:upd
+           curlyTrans:body                              -> ('for(' + init + ';' + cond + ';' + upd + ')' + body),
+  forIn    trans:x trans:arr curlyTrans:body            -> ('for(' + x + ' in ' + arr + ')' + body),
+  begin    trans:x end                                  -> x,
+  begin    (trans:x
+              ( (?(x[x.length - 1] == '}') | end) -> x
+              | empty                             -> (x  + ';')
+              )
+           )*:xs                                        -> ('{' + xs.join('') + '}'),
+  func     :args curlyTrans:body                        -> ('(function (' + args.join(',') + ')' + body + ')'),
+  call     trans:fn trans*:args                         -> (fn + '(' + args.join(',') + ')'),
+  send     :msg trans:recv trans*:args                  -> (recv + '.' + msg + '(' + args.join(',') + ')'),
+  new      :cls trans*:args                             -> ('new ' + cls + '(' + args.join(',') + ')'),
+  var      :name trans:val                              -> ('var ' + name + '=' + val),
+  throw    trans:x                                      -> ('throw ' + x),
+  try      curlyTrans:x :name curlyTrans:c curlyTrans:f -> ('try ' + x + 'catch(' + name + ')' + c + 'finally' + f),
+  json     trans*:props                                 -> ('({' + props.join(',') + '})'),
+  binding  :name trans:val                              -> (name.toProgramString() + ': ' + val),
+  switch   trans:x trans*:cases                         -> ('switch(' + x + '){' + cases.join(';') + '}'),
+  case     trans:x trans:y                              -> ('case ' + x + ': '+ y),
+  default          trans:y                              -> ('default: ' + y)
+}
+
+//
+// bs-ometa-compiler.txt
+//
+
+ometa BSOMetaParser <: Parser {
+  fromTo :x :y   = seq(x) (~seq(y) char)* seq(y), 
+  space          = ^space | fromTo('//', '\n') | fromTo('/*', '*/'),
+  nameFirst      = '_' | '$' | letter,
+  nameRest       = nameFirst | digit,
+  tsName         = firstAndRest(#nameFirst, #nameRest):xs              -> xs.join(''),
+  name           = spaces tsName,
+  eChar          = '\\' char:c                                         -> unescape('\\' +c)
+                 | char,
+  tsString       = '\'' (~'\'' eChar)*:xs '\''                         -> xs.join(''),
+  characters     = '`' '`' (~('\'' '\'') eChar)*:xs '\'' '\''          -> [#App, #seq,     xs.join('').toProgramString()],
+  sCharacters    = '"'     (~'"'         eChar)*:xs '"'                -> [#App, #token,   xs.join('').toProgramString()],
+  string         = (('#' | '`') tsName | tsString):xs                  -> [#App, #exactly, xs.toProgramString()],
+  number         = ('-' | empty -> ''):sign digit+:ds                  -> [#App, #exactly, sign + ds.join('')],
+  keyword :xs    = token(xs) ~letterOrDigit                            -> xs,
+  args           = '(' listOf(#hostExpr, ','):xs ")"                   -> xs
+                 | empty                                               -> [],
+  application    = "^"          name:rule args:as                      -> [#App, "super",        "'" + rule + "'"].concat(as)
+                 | name:grm "." name:rule args:as                      -> [#App, "foreign", grm, "'" + rule + "'"].concat(as)
+                 |              name:rule args:as                      -> [#App, rule].concat(as),
+  hostExpr       = BSSemActionParser.expr:r                               BSJSTranslator.trans(r),
+  curlyHostExpr  = BSSemActionParser.curlySemAction:r                     BSJSTranslator.trans(r),
+  primHostExpr   = BSSemActionParser.semAction:r                          BSJSTranslator.trans(r),
+  atomicHostExpr = curlyHostExpr | primHostExpr,
+  semAction      = curlyHostExpr:x                                     -> [#Act, x]
+                 | "!"  atomicHostExpr:x                               -> [#Act, x],
+  arrSemAction   = "->" atomicHostExpr:x                               -> [#Act, x],
+  semPred        = "?"  atomicHostExpr:x                               -> [#Pred, x],
+  expr           = expr5(true):x ("|"  expr5(true))+:xs                -> [#Or,  x].concat(xs)
+                 | expr5(true):x ("||" expr5(true))+:xs                -> [#XOr, x].concat(xs)
+                 | expr5(false),
+  expr5 :ne      = interleavePart:x ("&&" interleavePart)+:xs          -> [#Interleave, x].concat(xs)
+                 | expr4(ne),
+  interleavePart = "(" expr4(true):part ")"                            -> ["1", part]
+                 | expr4(true):part modedIPart(part),
+  modedIPart     = [#And [#Many  :part]]                               -> ["*", part]
+                 | [#And [#Many1 :part]]                               -> ["+", part]
+                 | [#And [#Opt   :part]]                               -> ["?", part]
+                 | :part                                               -> ["1", part],
+  expr4 :ne      =                expr3*:xs arrSemAction:act           -> [#And].concat(xs).concat([act])
+                 | ?ne            expr3+:xs                            -> [#And].concat(xs)
+                 | ?(ne == false) expr3*:xs                            -> [#And].concat(xs),
+  optIter :x     = '*'                                                 -> [#Many,  x]
+                 | '+'                                                 -> [#Many1, x]
+                 | '?'                                                 -> [#Opt,   x]
+                 | empty                                               -> x,
+  optBind :x     = ':' name:n                                          -> { this.locals.push(n); [#Set, n, x] }
+                 | empty                                               -> x,
+  expr3          = ":" name:n                                          -> { this.locals.push(n); [#Set, n, [#App, #anything]] }
+                 | (expr2:x optIter(x) | semAction):e optBind(e)
+                 | semPred,
+  expr2          = "~" expr2:x                                         -> [#Not,       x]
+                 | "&" expr1:x                                         -> [#Lookahead, x]
+                 | expr1,
+  expr1          = application 
+                 | ( keyword('undefined') | keyword('nil')
+                   | keyword('true')      | keyword('false') ):x       -> [#App, #exactly, x]
+                 | spaces (characters | sCharacters | string | number)
+                 | "["  expr:x "]"                                     -> [#Form,      x]
+                 | "<"  expr:x ">"                                     -> [#ConsBy,    x]
+                 | "@<" expr:x ">"                                     -> [#IdxConsBy, x]
+                 | "("  expr:x ")"                                     -> x,
+  ruleName       = name
+                 | spaces tsString,
+  rule           = &(ruleName:n) !(this.locals = ['$elf=this', '_fromIdx=this.input.idx'])
+                     rulePart(n):x ("," rulePart(n))*:xs               -> [#Rule, n, this.locals, [#Or, x].concat(xs)],
+  rulePart :rn   = ruleName:n ?(n == rn) expr4:b1 ( "=" expr:b2        -> [#And, b1, b2]
+                                                  | empty              -> b1
+                                                  ),
+  grammar        = keyword('ometa') name:n
+                     ( "<:" name | empty -> 'OMeta' ):sn
+                     "{" listOf(#rule, ','):rs "}"                        BSOMetaOptimizer.optimizeGrammar(
+                                                                            [#Grammar, n, sn].concat(rs)
+                                                                          )
+}
+
+// By dispatching on the head of a list, the following idiom allows translators to avoid doing a linear search.
+// (Note that the "=" in a rule definition is optional, so you can give your rules an "ML feel".)
+ometa BSOMetaTranslator {
+  App        'super' anything+:args        -> [this.sName, '._superApplyWithArgs(this,', args.join(','), ')']      .join(''),
+  App        :rule   anything+:args        -> ['this._applyWithArgs("', rule, '",',      args.join(','), ')']      .join(''),
+  App        :rule                         -> ['this._apply("', rule, '")']                                        .join(''),
+  Act        :expr                         -> expr,
+  Pred       :expr                         -> ['this._pred(', expr, ')']                                           .join(''),
+  Or         transFn*:xs                   -> ['this._or(',  xs.join(','), ')']                                    .join(''),
+  XOr        transFn*:xs                       {xs.unshift((this.name + "." + this.rName).toProgramString())}
+                                           -> ['this._xor(', xs.join(','), ')']                                    .join(''),
+  And        notLast(#trans)*:xs trans:y
+             {xs.push('return ' + y)}      -> ['(function(){', xs.join(';'), '}).call(this)']                      .join(''),
+  And                                      -> 'undefined',
+  Opt        transFn:x                     -> ['this._opt(',           x, ')']                                     .join(''),
+  Many       transFn:x                     -> ['this._many(',          x, ')']                                     .join(''),
+  Many1      transFn:x                     -> ['this._many1(',         x, ')']                                     .join(''),
+  Set        :n trans:v                    -> [n, '=', v]                                                          .join(''),
+  Not        transFn:x                     -> ['this._not(',           x, ')']                                     .join(''),
+  Lookahead  transFn:x                     -> ['this._lookahead(',     x, ')']                                     .join(''),
+  Form       transFn:x                     -> ['this._form(',          x, ')']                                     .join(''),
+  ConsBy     transFn:x                     -> ['this._consumedBy(',    x, ')']                                     .join(''),
+  IdxConsBy  transFn:x                     -> ['this._idxConsumedBy(', x, ')']                                     .join(''),
+  JumpTable  jtCase*:cases                 -> this.jumpTableCode(cases),
+  Interleave intPart*:xs                   -> ['this._interleave(', xs.join(','), ')']                             .join(''),
+  
+  Rule       :name {this.rName = name}
+             locals:ls trans:body          -> ['\n"', name, '":function(){', ls, 'return ', body, '}']             .join(''),
+  Grammar    :name :sName
+             {this.name = name}
+             {this.sName = sName}
+             trans*:rules                  -> [name, '=objectThatDelegatesTo(', sName, ',{', rules.join(','), '})'].join(''),
+  intPart  = [:mode transFn:part]          -> (mode.toProgramString()  + "," + part),
+  jtCase   = [:x trans:e]                  -> [x.toProgramString(), e],
+  locals   = [string+:vs]                  -> ['var ', vs.join(','), ';']                                          .join('')
+           | []                            -> '',
+  trans    = [:t apply(t):ans]             -> ans,
+  transFn  = trans:x                       -> ['(function(){return ', x, '})']                                     .join('')
+}
+
+BSOMetaTranslator.jumpTableCode = function(cases) {
+  var buf = new StringBuffer()
+  buf.nextPutAll("(function(){switch(this._apply('anything')){")
+  for (var i = 0; i < cases.length; i += 1)
+    buf.nextPutAll("case " + cases[i][0] + ":return " + cases[i][1] + ";")
+  buf.nextPutAll("default: throw fail}}).call(this)")
+  return buf.contents()
+}
+
+//
+//-- bs-ometa-optimizer.txt
+//
+
+// TODO: turn off the "seq" inliner when G.seq !== OMeta.seq (will require some refactoring)
+// TODO: add a factorizing optimization (will make jumptables more useful)
+
+ometa BSNullOptimization {
+  setHelped = !(this._didSomething = true),
+  helped    = ?this._didSomething,
+  trans     = [:t ?(this[t] != undefined) apply(t):ans] -> ans,
+  optimize  = trans:x helped                         -> x,
+
+  App        :rule anything*:args          -> ['App', rule].concat(args),
+  Act        :expr                         -> ['Act', expr],
+  Pred       :expr                         -> ['Pred', expr],
+  Or         trans*:xs                     -> ['Or'].concat(xs),
+  XOr        trans*:xs                     -> ['XOr'].concat(xs),
+  And        trans*:xs                     -> ['And'].concat(xs),
+  Opt        trans:x                       -> ['Opt',  x],
+  Many       trans:x                       -> ['Many',  x],
+  Many1      trans:x                       -> ['Many1', x],
+  Set        :n trans:v                    -> ['Set', n, v],
+  Not        trans:x                       -> ['Not',       x],
+  Lookahead  trans:x                       -> ['Lookahead', x],
+  Form       trans:x                       -> ['Form',      x],
+  ConsBy     trans:x                       -> ['ConsBy',    x],
+  IdxConsBy  trans:x                       -> ['IdxConsBy', x],
+  JumpTable  ([:c trans:e] -> [c, e])*:ces -> ['JumpTable'].concat(ces),
+  Interleave ([:m trans:p] -> [m, p])*:xs  -> ['Interleave'].concat(xs),
+  Rule       :name :ls trans:body          -> ['Rule', name, ls, body]
+}
+
+BSNullOptimization.initialize = function() { this._didSomething = false }
+
+ometa BSAssociativeOptimization <: BSNullOptimization {
+  And trans:x end           setHelped -> x,
+  And transInside('And'):xs           -> ['And'].concat(xs),
+  Or  trans:x end           setHelped -> x,
+  Or  transInside('Or'):xs            -> ['Or'].concat(xs),
+  XOr trans:x end           setHelped -> x,
+  XOr transInside('XOr'):xs           -> ['XOr'].concat(xs),
+
+  transInside :t = [exactly(t) transInside(t):xs] transInside(t):ys setHelped -> xs.concat(ys)
+                 | trans:x                        transInside(t):xs           -> [x].concat(xs)
+                 |                                                            -> []
+}
+
+ometa BSSeqInliner <: BSNullOptimization {
+  App        = 'seq' :s end seqString(s):cs setHelped -> ['And'].concat(cs).concat([['Act', s]])
+             | :rule anything*:args                   -> ['App', rule].concat(args),
+  inlineChar = BSOMetaParser.eChar:c ~end             -> ['App', 'exactly', c.toProgramString()],
+  seqString  = &(:s ?(typeof s === 'string'))
+                 ( ['"'  inlineChar*:cs '"' ]         -> cs
+                 | ['\'' inlineChar*:cs '\'']         -> cs
+                 )
+}
+
+JumpTable = function(choiceOp, choice) {
+  this.choiceOp = choiceOp
+  this.choices = {}
+  this.add(choice)
+}
+
+JumpTable.prototype.add = function(choice) {
+  var c = choice[0], t = choice[1]
+  if (this.choices[c]) {
+    if (this.choices[c][0] == this.choiceOp)
+      this.choices[c].push(t)
+    else
+      this.choices[c] = [this.choiceOp, this.choices[c], t]
+  }
+  else
+    this.choices[c] = t
+}
+JumpTable.prototype.toTree = function() {
+  var r = ['JumpTable'], choiceKeys = ownPropertyNames(this.choices)
+  for (var i = 0; i < choiceKeys.length; i += 1)
+    r.push([choiceKeys[i], this.choices[choiceKeys[i]]])
+  return r
+}
+ometa BSJumpTableOptimization <: BSNullOptimization {
+  Or  (jtChoices('Or')  | trans)*:cs -> ['Or'].concat(cs),
+  XOr (jtChoices('XOr') | trans)*:cs -> ['XOr'].concat(cs),
+  quotedString  = &string [ '"'  (BSOMetaParser.eChar:c ~end -> c)*:cs '"'
+                          | '\'' (BSOMetaParser.eChar:c ~end -> c)*:cs '\'']               -> cs.join(''),
+  jtChoice      = ['And' ['App' 'exactly' quotedString:x] anything*:rest]                  -> [x, ['And'].concat(rest)]
+                |        ['App' 'exactly' quotedString:x]                                  -> [x, ['Act', x.toProgramString()]],
+  jtChoices :op = jtChoice:c {new JumpTable(op, c)}:jt (jtChoice:c {jt.add(c)})* setHelped -> jt.toTree()
+}
+
+ometa BSOMetaOptimizer {
+  optimizeGrammar = ['Grammar' :n :sn optimizeRule*:rs]          -> ['Grammar', n, sn].concat(rs),
+  optimizeRule    = :r (BSSeqInliner.optimize(r):r | empty)
+                       ( BSAssociativeOptimization.optimize(r):r
+                       | BSJumpTableOptimization.optimize(r):r
+                       )*                                        -> r
+}
+
+//
+//-- bs-ometa-js-compiler.txt
+//
+
+ometa BSOMetaJSParser <: BSJSParser {
+  srcElem = spaces BSOMetaParser.grammar:r sc -> r
+          | ^srcElem
+}
+
+ometa BSOMetaJSTranslator <: BSJSTranslator {
+  Grammar = BSOMetaTranslator.Grammar
+}
+
