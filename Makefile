@@ -1,8 +1,10 @@
 GYP_DIR=../gyp
 OM=out/Release/ometa
 
+
 ometa: $(OM)
-	cp -p $(OM) .
+
+.DUMMY: ometa
 
 out/Release/ometa: v8-shell.cc ometa.gyp
 	ninja -C out/Release ometa
@@ -12,8 +14,8 @@ clean:
 
 bootstrap: out/bs-js-compiler.js out/bs-ometa-compiler.js out/bs-ometa-optimizer.js out/bs-ometa-js-compiler.js
 
-out/%.js : %.txt $(OM)
-	$(OM) bootstrap.ojs -e 'compile("$<")' > $@
+out/%.js : %.txt $(OM) Makefile bootstrap.ojs
+	$(OM) bootstrap.ojs -e 'beautify("$<")' > $@
 
 check: bootstrap
 	diff bs-js-compiler.js out
