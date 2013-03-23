@@ -18,12 +18,4 @@ translateCode = function(s) {
 
 ometa = function(s) { return eval(translateCode(s)) }
 
-
-// bs-js-compiler.js
-
-print(translateCode(read("bs-js-compiler.txt")))
-
-// bs-ometa-compiler.js
-// bs-ometa-optimizer.js
-// bs-ometa-js-compiler.js
-
+compile = function(s) { print(translateCode(read(s))) }
