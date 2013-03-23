@@ -13,7 +13,7 @@ clean:
 bootstrap: out/bs-js-compiler.js out/bs-ometa-compiler.js out/bs-ometa-optimizer.js out/bs-ometa-js-compiler.js
 
 out/%.js : %.txt $(OM)
-	$(OM) bootstrap.ojs -e 'translateCode(read("$<"))' > $@
+	$(OM) bootstrap.ojs -e 'compile("$<")' > $@
 
 check: bootstrap
 	diff bs-js-compiler.js out
