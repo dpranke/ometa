@@ -5,7 +5,6 @@ load("bs-js-compiler.js")
 load("bs-ometa-compiler.js")
 load("bs-ometa-optimizer.js")
 load("bs-ometa-js-compiler.js")
-load("../js-beautify/beautify.js")
 
 alert = print
 
@@ -19,5 +18,3 @@ translateCode = function(s) {
 ometa = function(s) { return eval(translateCode(s)) }
 
 compile = function(s) { print(translateCode(read(s))) }
-
-beautify = function(s) { print(js_beautify(translateCode(read(s)))) }

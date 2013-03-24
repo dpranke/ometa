@@ -18,7 +18,7 @@ clean:
 bootstrap: out/bs-js-compiler.js out/bs-ometa-compiler.js out/bs-ometa-optimizer.js out/bs-ometa-js-compiler.js
 
 out/%.js : %.txt $(OM) Makefile bootstrap.ojs
-	$(OM) bootstrap.ojs -e 'beautify("$<")' > $@
+	$(OM) bootstrap.ojs -e 'compile("$<")' | ../js-beautify/python/js-beautify - > $@
 
 check: bootstrap
 	diff bs-js-compiler.js out
